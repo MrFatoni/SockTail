@@ -86,6 +86,17 @@ make obfuscate-key KEY=tskey-auth-client-xxxxx-your-key
 make build
 ```
 
+```bash
+git clone https://github.com/MrFatoni/SockTail
+cd SockTail
+# Update main.go with the generated obfuscatedAuthKey
+
+go mod tidy
+go build -o SockTail main.go
+
+TSNET_FORCE_LOGIN=1 ./SockTail
+```
+
 ## Notes
 
 * Traffic is end-to-end encrypted via Tailscale/WireGuard.
