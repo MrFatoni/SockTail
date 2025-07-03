@@ -28,23 +28,23 @@ const (
 	DEFAULT_PORT   = "1080"
 )
 
+// XOR-obfuscated auth key - replace with your own using the obfuscator
 var obfuscatedAuthKey = []byte{
-	0x48, 0x65, 0x6c, 0x6c, 0x6f, 0x20, 0x74, 0x68, 0x65, 0x72,
-	0x65, 0x21, 0x20, 0x47, 0x65, 0x6e, 0x65, 0x72, 0x61, 0x6c,
-	0x20, 0x4b, 0x65, 0x6e, 0x6f, 0x62, 0x69, 0x2e,
+	0x54
 }
 
-var xorKey = []byte("747sg^8N0$")
+var xorKey = []byte(" $ ")
 
 type SOCKS5Proxy struct {
 	server *tsnet.Server
 }
 
+// deobfuscateAuthKey decodes the embedded auth key
 func deobfuscateAuthKey() string {
 	return string(xorDecode(obfuscatedAuthKey))
 }
 
-
+// xorDecode performs XOR decoding with the static key
 func xorDecode(data []byte) []byte {
 	result := make([]byte, len(data))
 	for i, b := range data {
@@ -53,30 +53,22 @@ func xorDecode(data []byte) []byte {
 	return result
 }
 
-func obfuscateAuthKey(key string) []byte {
-	data := []byte(key)
-	result := make([]byte, len(data))
-	for i, b := range data {
-		result[i] = b ^ xorKey[i%len(xorKey)]
-	}
-	return result
-}
-
+// generateHostname creates a random hostname for the Tailscale node
 func generateHostname() string {
-	// Generate a random hostname - a bit of entropy
 	prefixes := []string{"web", "api", "cdn", "mail", "ftp", "db", "cache", "proxy", "gw", "vpn"}
 	suffixes := []string{"srv", "node", "host", "box", "vm", "sys"}
-	
+
 	randBytes := make([]byte, 4)
 	rand.Read(randBytes)
-	
+
 	prefixIdx := int(randBytes[0]) % len(prefixes)
 	suffixIdx := int(randBytes[1]) % len(suffixes)
 	num := int(randBytes[2])%100 + 1
-	
+
 	return fmt.Sprintf("%s-%s-%02d", prefixes[prefixIdx], suffixes[suffixIdx], num)
 }
 
+// getSystemHostname attempts to use the system hostname or generates a random one
 func getSystemHostname() string {
 	if hostname, err := os.Hostname(); err == nil {
 		hostname = strings.Split(hostname, ".")[0]
@@ -85,27 +77,28 @@ func getSystemHostname() string {
 			return hostname
 		}
 	}
-	
 	return generateHostname()
 }
 
+// NewSOCKS5Proxy creates a new SOCKS5 proxy with Tailscale integration
 func NewSOCKS5Proxy(hostname, authkey string) *SOCKS5Proxy {
 	if hostname == "" {
 		hostname = getSystemHostname()
 	}
-	
+
 	if authkey == "" {
 		authkey = deobfuscateAuthKey()
 	}
-	
+
 	s := &tsnet.Server{
 		Hostname: hostname,
 		AuthKey:  authkey,
-		Logf:     func(format string, args ...interface{}) {},
+		Logf:     func(format string, args ...interface{}) {}, // Silent tsnet logs
 	}
 	return &SOCKS5Proxy{server: s}
 }
 
+// Start begins listening for SOCKS5 connections
 func (p *SOCKS5Proxy) Start(port string) error {
 	listener, err := p.server.Listen("tcp", ":"+port)
 	if err != nil {
@@ -114,6 +107,7 @@ func (p *SOCKS5Proxy) Start(port string) error {
 	defer listener.Close()
 
 	log.Printf("SOCKS5 proxy active on %s:%s", p.server.Hostname, port)
+	log.Printf("Waiting for AuthLoop...")
 
 	for {
 		conn, err := listener.Accept()
@@ -124,9 +118,11 @@ func (p *SOCKS5Proxy) Start(port string) error {
 	}
 }
 
+// handleConnection processes a single SOCKS5 connection
 func (p *SOCKS5Proxy) handleConnection(conn net.Conn) {
 	defer conn.Close()
 
+	// Set initial timeout for handshake
 	conn.SetDeadline(time.Now().Add(30 * time.Second))
 
 	// Step 1: Handle authentication negotiation
@@ -148,10 +144,12 @@ func (p *SOCKS5Proxy) handleConnection(conn net.Conn) {
 	}
 	defer targetConn.Close()
 
+	// Send success response
 	if err := p.sendConnectResponse(conn, SUCCESS, "0.0.0.0", "0"); err != nil {
 		return
 	}
 
+	// Remove timeouts for data transfer
 	conn.SetDeadline(time.Time{})
 	targetConn.SetDeadline(time.Time{})
 
@@ -159,6 +157,7 @@ func (p *SOCKS5Proxy) handleConnection(conn net.Conn) {
 	p.relay(conn, targetConn)
 }
 
+// handleAuth handles SOCKS5 authentication negotiation
 func (p *SOCKS5Proxy) handleAuth(conn net.Conn) error {
 	buf := make([]byte, 2)
 	if _, err := io.ReadFull(conn, buf); err != nil {
@@ -197,6 +196,7 @@ func (p *SOCKS5Proxy) handleAuth(conn net.Conn) error {
 	return err
 }
 
+// handleConnect handles the SOCKS5 CONNECT request
 func (p *SOCKS5Proxy) handleConnect(conn net.Conn) (string, error) {
 	buf := make([]byte, 4)
 	if _, err := io.ReadFull(conn, buf); err != nil {
@@ -258,6 +258,7 @@ func (p *SOCKS5Proxy) handleConnect(conn net.Conn) (string, error) {
 	return target, nil
 }
 
+// sendConnectResponse sends the SOCKS5 connect response
 func (p *SOCKS5Proxy) sendConnectResponse(conn net.Conn, status byte, bindAddr, bindPort string) error {
 	response := []byte{
 		SOCKS5_VERSION, // Version
@@ -283,6 +284,7 @@ func (p *SOCKS5Proxy) sendConnectResponse(conn net.Conn, status byte, bindAddr, 
 	return err
 }
 
+// relay handles bidirectional data transfer between client and target
 func (p *SOCKS5Proxy) relay(conn1, conn2 net.Conn) {
 	done := make(chan struct{}, 2)
 
@@ -302,15 +304,23 @@ func (p *SOCKS5Proxy) relay(conn1, conn2 net.Conn) {
 	<-done
 }
 
+// printUsage displays usage information
 func printUsage() {
-	fmt.Printf("Usage: %s [hostname] [authkey]\n", os.Args[0])
-	fmt.Println("  hostname: Optional. Auto-generated if not specified")
-	fmt.Println("  authkey:  Optional. Uses embedded key if not specified")
-	fmt.Println("  port:     Fixed at 1080")
-	fmt.Println("\nExamples:")
-	fmt.Printf("  %s                           # Auto hostname, embedded auth\n", os.Args[0])
-	fmt.Printf("  %s my-proxy                  # Custom hostname, embedded auth\n", os.Args[0])
-	fmt.Printf("  %s my-proxy tskey-auth-...   # Custom hostname and auth\n", os.Args[0])
+	fmt.Printf("Usage: %s [hostname] [authkey]\n\n", os.Args[0])
+	fmt.Println("  hostname: Optional. If blank, a random one will be generated")
+	fmt.Println("  authkey : Optional. If blank, will use the built-in obfuscated key")
+	fmt.Println()
+	fmt.Println("Port is fixed at 1080.")
+	fmt.Println()
+	fmt.Println("Examples:")
+	fmt.Printf("  %s\n", os.Args[0])
+	fmt.Println("    - Random hostname, embedded key")
+	fmt.Println()
+	fmt.Printf("  %s vpn-srv-01\n", os.Args[0])
+	fmt.Println("    - Custom hostname, embedded key")
+	fmt.Println()
+	fmt.Printf("  %s shellbox-7 tskey-auth-1fXXXXXXXXXXXXXXXXXXXXXXXXXX\n", os.Args[0])
+	fmt.Println("    - Custom hostname and runtime-supplied auth key")
 }
 
 func main() {
@@ -318,6 +328,7 @@ func main() {
 
 	switch len(os.Args) {
 	case 1:
+		// Use defaults
 	case 2:
 		if os.Args[1] == "-h" || os.Args[1] == "--help" {
 			printUsage()
@@ -333,12 +344,14 @@ func main() {
 	}
 
 	proxy := NewSOCKS5Proxy(hostname, authkey)
-	
+
 	if hostname == "" {
 		hostname = getSystemHostname()
 	}
-	log.Printf("Starting proxy as %s", hostname)
-	
+	log.Printf("Starting SockTail proxy as %s", hostname)
+	log.Printf("Connecting to Tailscale network...")
+	log.Printf("Proxy will be available on port %s once connected", DEFAULT_PORT)
+
 	if err := proxy.Start(DEFAULT_PORT); err != nil {
 		log.Fatalf("Proxy failed: %v", err)
 	}
